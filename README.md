@@ -188,12 +188,46 @@
             overflow: hidden;
             margin: 20px 0;
             display: none;
+            position: relative;
         }
         
         #video {
             width: 100%;
             height: 100%;
             object-fit: cover;
+        }
+        
+        .scan-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+        }
+        
+        .scan-frame {
+            width: 70%;
+            height: 70%;
+            border: 2px solid #2575fc;
+            border-radius: 10px;
+            box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.5);
+        }
+        
+        .scan-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background-color: #2575fc;
+            animation: scan 2s linear infinite;
+        }
+        
+        @keyframes scan {
+            0% { top: 0; }
+            100% { top: 100%; }
         }
         
         @media (max-width: 600px) {
@@ -258,6 +292,11 @@
             
             <div class="camera-preview" id="camera-preview">
                 <video id="video" autoplay playsinline></video>
+                <div class="scan-overlay">
+                    <div class="scan-frame">
+                        <div class="scan-line"></div>
+                    </div>
+                </div>
             </div>
             
             <div class="action-btns">
@@ -285,6 +324,10 @@
         </div>
     </div>
 
+    <!-- Librerías para escaneo -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
+
     <script>
         // Elementos DOM
         const resultElement = document.getElementById('result');
@@ -301,6 +344,9 @@
         
         let stream = null;
         let isScanning = false;
+        let scanInterval = null;
+        let canvas = null;
+        let context = null;
 
         // Método 1: API Nativa de Escaneo (Funciona en Android Chrome)
         nativeScanBtn.addEventListener('click', async () => {
@@ -360,8 +406,11 @@
             if (!isScanning) return;
             
             try {
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
+                if (!canvas) {
+                    canvas = document.createElement('canvas');
+                    context = canvas.getContext('2d');
+                }
+                
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -382,7 +431,7 @@
             }
         }
 
-        // Método alternativo de cámara
+        // Método alternativo de cámara con librerías
         async function startCameraWithFallback() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ 
@@ -395,12 +444,60 @@
                 startCameraBtn.style.display = 'none';
                 stopCameraBtn.style.display = 'block';
                 
-                resultElement.textContent = "Cámara activada. Usando método de escaneo alternativo...";
+                resultElement.textContent = "Cámara activada. Escaneando códigos...";
+                
+                // Iniciar escaneo con librerías
+                startScanningWithLibraries();
                 
             } catch (error) {
                 resultElement.textContent = "No se pudo acceder a la cámara. Usa el método de subir imagen o servidor.";
                 showServerInstructions();
             }
+        }
+
+        // Escanear con librerías jsQR y Quagga
+        function startScanningWithLibraries() {
+            if (!canvas) {
+                canvas = document.createElement('canvas');
+                context = canvas.getContext('2d');
+            }
+            
+            scanInterval = setInterval(() => {
+                if (!isScanning) return;
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+                
+                // Intentar detectar códigos QR
+                const qrCode = jsQR(imageData.data, imageData.width, imageData.height);
+                
+                if (qrCode) {
+                    resultElement.textContent = `Código QR detectado: ${qrCode.data}`;
+                    stopCamera();
+                    return;
+                }
+                
+                // Intentar detectar códigos de barras
+                try {
+                    Quagga.decodeSingle({
+                        decoder: {
+                            readers: ['code_128_reader', 'ean_reader', 'ean_8_reader', 'code_39_reader', 'upc_reader']
+                        },
+                        locate: true,
+                        src: canvas.toDataURL()
+                    }, function(result) {
+                        if (result && result.codeResult) {
+                            resultElement.textContent = `Código de barras detectado: ${result.codeResult.code}`;
+                            stopCamera();
+                        }
+                    });
+                } catch (error) {
+                    console.error("Error en Quagga:", error);
+                }
+            }, 500);
         }
 
         // Método 2: Subir imagen
@@ -414,10 +511,8 @@
                 
                 reader.onload = (e) => {
                     img.onload = () => {
-                        // Simular procesamiento de código
-                        setTimeout(() => {
-                            resultElement.textContent = `Código simulado desde imagen: ${file.name}\n(En una implementación real, aquí se procesaría la imagen con una librería de escaneo)`;
-                        }, 1500);
+                        // Procesar la imagen con las librerías
+                        processImageForCodes(img);
                     };
                     img.src = e.target.result;
                 };
@@ -425,6 +520,48 @@
                 reader.readAsDataURL(file);
             }
         });
+
+        // Procesar imagen para detectar códigos
+        function processImageForCodes(img) {
+            if (!canvas) {
+                canvas = document.createElement('canvas');
+                context = canvas.getContext('2d');
+            }
+            
+            canvas.width = img.width;
+            canvas.height = img.height;
+            context.drawImage(img, 0, 0, canvas.width, canvas.height);
+            
+            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            
+            // Intentar detectar códigos QR
+            const qrCode = jsQR(imageData.data, imageData.width, imageData.height);
+            
+            if (qrCode) {
+                resultElement.textContent = `Código QR detectado: ${qrCode.data}`;
+                return;
+            }
+            
+            // Intentar detectar códigos de barras
+            try {
+                Quagga.decodeSingle({
+                    decoder: {
+                        readers: ['code_128_reader', 'ean_reader', 'ean_8_reader', 'code_39_reader', 'upc_reader']
+                    },
+                    locate: true,
+                    src: canvas.toDataURL()
+                }, function(result) {
+                    if (result && result.codeResult) {
+                        resultElement.textContent = `Código de barras detectado: ${result.codeResult.code}`;
+                    } else {
+                        resultElement.textContent = "No se detectó ningún código en la imagen.";
+                    }
+                });
+            } catch (error) {
+                console.error("Error en Quagga:", error);
+                resultElement.textContent = "Error al procesar la imagen.";
+            }
+        }
 
         // Método 3: Instrucciones para servidor
         serverInfoBtn.addEventListener('click', showServerInstructions);
@@ -450,6 +587,11 @@
 
         function stopCamera() {
             isScanning = false;
+            
+            if (scanInterval) {
+                clearInterval(scanInterval);
+                scanInterval = null;
+            }
             
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
